@@ -1,4 +1,4 @@
-// Token Launch Radar's dashboard (model radar-2). It reads window.RADAR (written beside dashboard/
+// Token Launch Radar's dashboard (model radar-3). It reads window.RADAR (written beside dashboard/
 // by main.ts) and renders the ranked board, a live-token view kept apart from the ranking, a method
 // page that states the model, and a detail view for every protocol with its model breakdown and
 // farm plan. No network: every byte it shows is in data.js. The detail view recomputes the implied
@@ -8,7 +8,7 @@
   'use strict';
 
   var DATA = window.RADAR;
-  if (!DATA) return;
+  if (!DATA) { document.getElementById('board').textContent = 'Data missing. Run main.ts to build the dashboard.'; return; }
   var app = document.getElementById('board');
   app.removeAttribute('aria-busy');
 
@@ -20,7 +20,7 @@
     chain: params.get('chain') || 'all',
     watchOnly: params.get('watch') === '1',
     sort: params.get('sort') || 'implied',
-    dir: -1,
+    dir: params.get('sort') === 'rank' ? 1 : -1,
     slug: params.get('slug') || null,
   };
 
@@ -47,7 +47,7 @@
     });
   }
 
-  // The model, recomputed in the page: identical constants and formula to lib/model.ts (radar-2).
+  // The model, recomputed in the page: identical constants and formula to lib/model.ts (radar-3).
   function impliedOf(row) {
     var m = DATA.model;
     var growth = Math.min(m.growth_cap, Math.max(m.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
@@ -84,6 +84,8 @@
     rows.sort(function (a, b) {
       var av = a[key] === null || a[key] === undefined ? -Infinity : a[key];
       var bv = b[key] === null || b[key] === undefined ? -Infinity : b[key];
+      if (av === -Infinity && bv !== -Infinity) return 1;
+      if (bv === -Infinity && av !== -Infinity) return -1;
       if (av !== bv) return state.dir * (av - bv);
       return a.rank - b.rank;
     });
@@ -94,19 +96,19 @@
     return (
       '<header class="top">' +
       '<p class="eyebrow">Token Launch Radar · model ' + esc(DATA.model_version) + '</p>' +
-      '<h1>Which pre-token protocol launches biggest?</h1>' +
-      '<p class="lede">Every protocol in the snapshot that <strong>records no token</strong> and is not a wrapped, staked or bridged product of one that trades, ranked by what its launch would be worth under one stated model — each with the steps to farm it. Implied value is this board\u2019s own claim from the snapshot\u2019s figures, not a prediction that a token will come.</p>' +
+      '<h1>Find the next token launch opportunity.</h1>' +
+      '<p class="lede">Snapshot-ranked opportunities with <strong>no token recorded</strong>. Comparable-token valuations, bounded growth and maturity adjustments, and conditional farm plans. Launch value is a scenario, not launch probability or expected airdrop proceeds.</p>' +
       '<div class="stats">' +
       '<div class="stat"><b>' + DATA.rows.length + '</b><span>protocols ranked</span></div>' +
-      '<div class="stat"><b>' + DATA.watchlist_size + ' / ' + DATA.watchlist_size + '</b><span>watchlist covered</span></div>' +
-      '<div class="stat hot"><b>' + DATA.early_size + '</b><span>early finds below the $50M floor</span></div>' +
-      '<div class="stat"><b>' + DATA.total_pre_token + '</b><span>pre-token in snapshot</span></div>' +
-      '<div class="stat"><b>' + DATA.live_size + '</b><span>live tokens set aside</span></div>' +
+      '<div class="stat"><b>' + DATA.watchlist_covered + ' / ' + DATA.watchlist_size + '</b><span>watchlist covered</span></div>' +
+      '<div class="stat hot"><b>' + DATA.early_size + '</b><span>below-floor finds</span></div>' +
+      '<div class="stat"><b>' + DATA.total_pre_token + '</b><span>no token recorded</span></div>' +
+      '<div class="stat"><b>' + DATA.live_size + '</b><span>priced token records</span></div>' +
       '<div class="stat"><b>' + esc(DATA.as_of) + '</b><span>snapshot date</span></div>' +
       '</div>' +
       '<nav class="tabs" role="tablist">' +
       '<button data-view="board" aria-selected="' + (state.view === 'board' || state.view === 'detail') + '">The board</button>' +
-      '<button data-view="live" aria-selected="' + (state.view === 'live') + '">Live tokens (not ranked)</button>' +
+      '<button data-view="live" aria-selected="' + (state.view === 'live') + '">Priced tokens (not ranked)</button>' +
       '<button data-view="method" aria-selected="' + (state.view === 'method') + '">How the model works</button>' +
       '</nav></header>'
     );
@@ -128,10 +130,10 @@
     }).join('');
     return (
       '<div class="controls">' +
-      '<input type="search" id="q" placeholder="Search name or slug…" value="' + esc(state.q) + '">' +
-      '<select id="category">' + catOpts + '</select>' +
-      '<select id="chain">' + chainOpts + '</select>' +
-      '<select id="sort">' + sortOpts + '</select>' +
+      '<input type="search" aria-label="Search protocols" id="q" placeholder="Search name or slug…" value="' + esc(state.q) + '">' +
+      '<select aria-label="Category" id="category">' + catOpts + '</select>' +
+      '<select aria-label="Chain" id="chain">' + chainOpts + '</select>' +
+      '<select aria-label="Sort" id="sort">' + sortOpts + '</select>' +
       '<label class="check"><input type="checkbox" id="watch"' + (state.watchOnly ? ' checked' : '') + '> Watchlist only</label>' +
       '<span class="count" id="count"></span>' +
       '</div>'
@@ -143,10 +145,10 @@
     var body = rows.map(function (r) {
       var chg = r.change_7d === null ? '<td class="num">n/a</td>' : '<td class="num ' + (r.change_7d >= 0 ? 'up' : 'down') + '">' + fmtPct(r.change_7d) + '</td>';
       return (
-        '<tr data-slug="' + esc(r.slug) + '">' +
+        '<tr tabindex="0" role="link" aria-label="Open ' + esc(r.name) + '" data-slug="' + esc(r.slug) + '">' +
         '<td class="rank">' + r.rank + '</td>' +
         '<td><span class="pname">' + esc(r.name) + '</span>' +
-        (r.on_watchlist ? '<span class="badge">watchlist</span>' : '<span class="badge early">early</span>') +
+        (r.on_watchlist ? '<span class="badge">watchlist</span>' : '<span class="badge early">' + (r.tvl_usd < DATA.floor_usd ? 'early' : 'unverified') + '</span>') +
         '<br><span class="pcat">' + esc(r.category || 'Uncategorised') + '</span></td>' +
         '<td class="chains">' + esc(r.chains.slice(0, 3).join(', ')) + (r.chains.length > 3 ? ' +' + (r.chains.length - 3) : '') + '</td>' +
         '<td class="num">' + fmtUsd(r.tvl_usd) + '</td>' + chg +
@@ -177,26 +179,26 @@
       header() +
       '<section class="detail">' +
       '<button class="back" id="back">← Back to the board</button>' +
-      '<p class="eyebrow">Rank #' + row.rank + ' of ' + DATA.rows.length + (row.on_watchlist ? ' · on the house watchlist' : ' · early find below the watchlist floor') + '</p>' +
+      '<p class="eyebrow">Rank #' + row.rank + ' of ' + DATA.rows.length + (row.on_watchlist ? ' · on the house watchlist' : ' · outside watchlist; parent relation unverified') + '</p>' +
       '<h2>' + esc(row.name) + '</h2>' +
       '<p class="lede">' + esc(row.category || 'Uncategorised') + ' · ' + esc(row.chains.join(', ') || 'no chains recorded') + ' · tracked by DefiLlama since ' + esc(row.listed_at || 'an unrecorded date') + '</p>' +
       '<div class="grid">' +
       '<div class="cell"><b>' + fmtUsd(row.tvl_usd) + '</b><span>TVL</span></div>' +
       '<div class="cell"><b>' + fmtPct(row.change_7d) + '</b><span>TVL change, 7d</span></div>' +
-      '<div class="cell"><b>' + fmtAge(row.age_days) + '</b><span>age with no token</span></div>' +
+      '<div class="cell"><b>' + fmtAge(row.age_days) + '</b><span>tracking age</span></div>' +
       '<div class="cell"><b>' + row.chains.length + '</b><span>chains</span></div>' +
       '<div class="cell"><b>' + fmtUsd(row.implied_value_usd) + '</b><span>implied launch value</span></div>' +
       '<div class="cell"><b>' + (row.tvl_usd > 0 ? (row.implied_value_usd / row.tvl_usd).toFixed(2) + '×' : 'n/a') + '</b><span>implied / TVL</span></div>' +
       '</div>' +
-      '<div class="modelbox"><h3>Why this value — the model, step by step</h3>' +
-      '<div class="mrow"><span>TVL × category multiple (' + row.category_multiple.toFixed(2) + ' for ' + esc(row.category || 'its category') + ')</span><b>' + fmtUsd(Math.round(row.tvl_usd * row.category_multiple)) + '</b></div>' +
+      '<div class="detailcolumns"><div class="modelbox"><h3>Why this value — the model, step by step</h3>' +
+      '<div class="mrow"><span>TVL × peer multiple (' + row.category_multiple.toFixed(3) + ' for ' + esc(row.category || 'its category') + ')</span><b>' + fmtUsd(Math.round(row.tvl_usd * row.category_multiple)) + '</b></div>' +
       '<div class="mrow"><span>× growth multiplier (7d change ' + fmtPct(row.change_7d) + ', clamped)</span><b>× ' + row.growth_multiplier.toFixed(2) + '</b></div>' +
-      '<div class="mrow"><span>× maturity multiplier (' + fmtAge(row.age_days) + ' with no token)</span><b>× ' + row.maturity_multiplier.toFixed(2) + '</b></div>' +
+      '<div class="mrow"><span>× maturity multiplier (' + fmtAge(row.age_days) + ' tracked)</span><b>× ' + row.maturity_multiplier.toFixed(2) + '</b></div>' +
       '<div class="mrow"><span>× breadth multiplier (' + row.chains.length + ' chain' + (row.chains.length === 1 ? '' : 's') + ')</span><b>× ' + row.breadth_multiplier.toFixed(2) + '</b></div>' +
       '<div class="mrow total"><span>Implied launch value</span><b>' + fmtUsd(row.implied_value_usd) + '</b></div>' +
-      '<p class="verify">This page recomputes the same formula from the row\u2019s own figures and gets ' + fmtUsd(recomputed) + (recomputed === row.implied_value_usd ? ' — the same number board.json carries.' : '.') + '</p>' +
+      '<p class="verify">This page recomputes the same formula from the row\u2019s own figures and gets ' + usd.format(recomputed) + (recomputed === row.implied_value_usd ? ' — the same number board.json carries.' : '.') + '</p>' +
       '</div>' +
-      '<div class="farmbox"><h3>How to farm it</h3><ol class="farm">' + steps + '</ol></div>' +
+      '<div class="farmbox"><h3>Conditional farm plan</h3><p class="hint">No rewards, assets or features verified by the snapshot. Budgets are illustrative ceilings.</p><ol class="farm">' + steps + '</ol></div></div>' +
       '</section>' + footer()
     );
   }
@@ -211,7 +213,7 @@
     }).join('');
     return (
       header() +
-      '<p class="lede" style="margin-bottom:12px">These protocols already have a token that trades, so the radar does not rank them — it shows the market\u2019s own value for them, as the scale a launch is measured against.</p>' +
+      '<p class="lede" style="margin-bottom:12px">Positive market-cap records, separate from launch candidates. Current circulating cap is not historical launch FDV. Token records without a positive quoted cap: ' + DATA.unpriced_token_records + ' (not ranked or shown here).</p>' +
       '<table><thead><tr><th>Protocol</th><th>Chains</th><th class="num">Market cap</th><th class="num">TVL</th><th class="num">7d change</th></tr></thead><tbody>' + body + '</tbody></table>' +
       footer()
     );
@@ -219,24 +221,8 @@
 
   function methodView() {
     var m = DATA.model;
-    var mults = DATA.category_multiples.map(function (c) {
-      return '<tr><td>' + esc(c.family) + '</td><td class="num">' + c.multiple.toFixed(2) + '× TVL</td></tr>';
-    }).join('');
-    return (
-      header() +
-      '<section class="method"><h3>The model (' + esc(DATA.model_version) + ')</h3>' +
-      '<p class="formula">implied = TVL × category multiple × growth multiplier × maturity multiplier × breadth multiplier</p>' +
-      '<p><strong>Growth.</strong> The 7-day TVL change, clamped to ' + m.growth_floor + '%…+' + m.growth_cap + '%, becomes <code>1 + (growth / 100) × ' + m.growth_weight + '</code>: a protocol growing 50% in a week is worth about 30% more than a flat one of the same size, and a shrinking one is marked down, never to zero.</p>' +
-      '<p><strong>Maturity.</strong> <code>' + m.maturity_floor + ' + ' + m.maturity_range + ' × min(age, ' + m.maturity_days + ' days) / ' + m.maturity_days + '</code>: every extra year a protocol has run at size with no token is evidence its launch, if it comes, is a real event and not a wrapper. An unrecorded listing date counts as ' + m.unknown_age_days + ' days.</p>' +
-      '<p><strong>Breadth.</strong> <code>1 + ' + m.breadth_per_chain + ' × min(chains − 1, ' + m.breadth_max_extra_chains + ')</code>: a protocol live on more chains reaches more wallets that a launch would drop to.</p>' +
-      '<h3>Category multiples</h3>' +
-      '<p>Venues that intermediate order flow have historically launched at a higher value per dollar of TVL than passive yield or lending books, so the model prices the business, not just the balance:</p>' +
-      '<table><thead><tr><th>Family</th><th class="num">Base</th></tr></thead><tbody>' + mults + '</tbody></table>' +
-      '<h3>Who is on the board — and who is not</h3>' +
-      '<p>The board ranks every protocol whose snapshot record shows no token (no market cap, no CoinGecko id, no symbol) after removing the products of tokens that already trade: categories Bridge, Canonical Bridge, Liquid Staking, Liquid Restaking, Restaked BTC and CEX, names ending in a version marker, names carrying the whole word wrapped, staked or staking, and names beginning with an exchange\u2019s name. The house watchlist — the same rule above a $50M TVL floor — is the floor of the board, never its ceiling: ' + DATA.early_size + ' of the ' + DATA.rows.length + ' ranked protocols sit below that floor. Protocols with a live token are never ranked; they are shown apart, at market value, on the Live tokens tab.</p>' +
-      '<p>No protocol name is special-cased anywhere in the model: one function scores every row from its own figures, and the detail view of every row shows the arithmetic and recomputes it in the page.</p>' +
-      '</section>' + footer()
-    );
+    var mults = DATA.category_multiples.map(function(c) { return '<tr><td>'+esc(c.family)+'</td><td class="num">'+c.n+'</td><td class="num">'+(c.median===null?'n/a':c.median.toFixed(3))+'</td><td class="num">'+c.multiple.toFixed(3)+'×</td></tr>'; }).join('');
+    return header()+'<section class="method"><h2>Transparent valuation</h2><p class="formula">TVL × peer multiple × growth × tracking maturity × chain breadth</p><p>Calibrate from positive market-cap records at or above the watchlist TVL floor, excluding product-like records. Deduplicate by token identifier (symbol fallback; highest TVL wins). Bound each market-cap/TVL ratio to 0.05–2.00; compute the overall median, then shrink each family median towards it with weight n/(n+12). If no peer exists, use 0.30 as an explicit fallback.</p><p>Global peer pool: <strong>'+m.global_peer.n+'</strong> · median / fallback: <strong>'+m.global_peer.multiple.toFixed(3)+'×</strong></p><table><thead><tr><th>Family</th><th>Peers</th><th>Bounded median</th><th>Used multiple</th></tr></thead><tbody>'+mults+'</tbody></table><h3>Bounded adjustments</h3><p>Growth: 1 + clamp(7d TVL change, −40%, +60%) × 0.25 / 100 (0.90–1.15); missing = 0%. Maturity: 0.85 + 0.30 × min(tracking age, 1460 days)/1460; missing = 730 days. Breadth: 1 + 0.02 × min(max(chain count−1, 0), 5). These are heuristic, not fitted launch effects.</p><h3>Coverage and limitations</h3><p>All '+DATA.watchlist_covered+' official watchlist rows are included; '+DATA.outside_size+' more pass observable category, name and token-field screens. '+DATA.early_size+' are below the floor. Parent-protocol relationships are absent from the snapshot, so outside-watchlist candidates remain provisional. No token recorded is not proof of no token.</p><p>Current circulating cap is a proxy for conditional launch market cap, not FDV or historical launch calibration. TVL can be duplicated or driven by incentives; category labels, short-term TVL changes and tracking age are imperfect. No airdrop probability, distribution or return is inferred. The model is deterministic and uses only sealed input.</p></section>'+footer();
   }
 
   function render() {
@@ -248,6 +234,7 @@
     } else if (state.view === 'live') html = liveView();
     else if (state.view === 'method') html = methodView();
     else html = boardView();
+    app.className = state.view === 'detail' ? 'detail-page' : '';
     app.innerHTML = html;
     bind();
     var count = document.getElementById('count');
@@ -278,7 +265,8 @@
       });
     });
     app.querySelectorAll('tbody tr[data-slug]').forEach(function (tr) {
-      tr.addEventListener('click', function () { state.slug = tr.getAttribute('data-slug'); state.view = 'detail'; render(); window.scrollTo(0, 0); });
+      function open() { state.slug = tr.getAttribute('data-slug'); state.view = 'detail'; render(); window.scrollTo(0, 0); }
+      tr.addEventListener('click', open); tr.addEventListener('keydown', function(e){ if(e.key==='Enter'||e.key===' '){e.preventDefault();open();} });
     });
     var back = document.getElementById('back');
     if (back) back.addEventListener('click', function () { state.view = 'board'; render(); });
