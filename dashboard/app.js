@@ -14,16 +14,45 @@
   app.removeAttribute('aria-busy');
 
   var params = new URLSearchParams(location.search);
+  var SORT_KEYS = ['implied', 'tvl', 'growth', 'age', 'rank'];
+  // State is read from the URL, validated, and written back on every render, so a
+  // refresh or a shared link keeps the same filters and sort. Anything invalid
+  // falls back to the board with defaults instead of an empty detail page: an
+  // unknown view, sort, category or chain, or a detail slug that names no row.
   var state = {
     view: params.get('view') || 'board', // board | live | method | detail
     q: params.get('q') || '',
     category: params.get('category') || 'all',
     chain: params.get('chain') || 'all',
     watchOnly: params.get('watch') === '1',
-    sort: params.get('sort') || 'implied',
+    belowFloor: params.get('below') === '1',
+    sort: SORT_KEYS.indexOf(params.get('sort') || '') >= 0 ? params.get('sort') : 'implied',
     dir: params.get('sort') === 'rank' ? 1 : -1,
     slug: params.get('slug') || null,
   };
+  if (state.view !== 'board' && state.view !== 'live' && state.view !== 'method' && state.view !== 'detail') state.view = 'board';
+  if (state.category !== 'all' && categories().indexOf(state.category) < 0) state.category = 'all';
+  if (state.chain !== 'all' && chains().indexOf(state.chain) < 0) state.chain = 'all';
+  if (state.view === 'detail' && (!state.slug || !DATA.rows.some(function (r) { return r.slug === state.slug; }))) {
+    state.view = 'board'; state.slug = null;
+  }
+
+  // Keep the URL in step with the state, so filters and sort survive a refresh.
+  function syncUrl() {
+    try {
+      var p = new URLSearchParams();
+      if (state.view !== 'board') p.set('view', state.view);
+      if (state.q) p.set('q', state.q);
+      if (state.category !== 'all') p.set('category', state.category);
+      if (state.chain !== 'all') p.set('chain', state.chain);
+      if (state.watchOnly) p.set('watch', '1');
+      if (state.belowFloor) p.set('below', '1');
+      if (state.sort !== 'implied') p.set('sort', state.sort);
+      if (state.view === 'detail' && state.slug) p.set('slug', state.slug);
+      var qs = p.toString();
+      history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+    } catch (e) { /* file:// or sandboxed hosts: the page works without it */ }
+  }
 
   var usd = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 });
   function fmtUsd(n) {
@@ -79,6 +108,7 @@
         var q = state.q.toLowerCase();
         if (r.name.toLowerCase().indexOf(q) < 0 && r.slug.indexOf(q) < 0) return false;
       }
+      if (state.belowFloor && r.tvl_usd >= DATA.floor_usd) return false;
       return true;
     });
     var key = { implied: 'implied_value_usd', tvl: 'tvl_usd', growth: 'change_7d', age: 'age_days', rank: 'rank' }[state.sort] || 'implied_value_usd';
@@ -103,9 +133,9 @@
       '<div class="stat"><b>' + DATA.rows.length + '</b><span>protocols ranked</span></div>' +
       '<div class="stat"><b>' + DATA.watchlist_covered + ' / ' + DATA.watchlist_size + '</b><span>watchlist covered</span></div>' +
       '<div class="stat hot"><b>' + DATA.early_size + '</b><span>below-floor finds</span></div>' +
-      '<div class="stat"><b>' + DATA.total_pre_token + '</b><span>no token recorded</span></div>' +
-      '<div class="stat"><b>' + DATA.live_size + '</b><span>priced token records</span></div>' +
-      '<div class="stat"><b>' + esc(DATA.as_of) + '</b><span>snapshot date</span></div>' +
+      '<div class="stat"><b>' + DATA.coverage.preTokenExcluded + '</b><span>excluded as product-like</span></div>' +
+      '<div class="stat"><b>' + DATA.coverage.priced + '</b><span>priced token records</span></div>' +
+      '<div class="stat"><b>' + DATA.coverage.unpricedTokenEvidence + '</b><span>token evidence, unpriced</span></div>' +
       '</div>' +
       '<nav class="tabs" role="tablist">' +
       '<button data-view="board" aria-selected="' + (state.view === 'board' || state.view === 'detail') + '">The board</button>' +
@@ -116,7 +146,7 @@
   }
 
   function footer() {
-    return '<footer>Data: ' + esc(DATA.source) + '. “Records no token” is what the snapshot\u2019s record shows — a protocol may still have a token its record does not carry. Farm plans are a starting point, not financial advice; never pay to claim an airdrop.</footer>';
+    return '<footer>Data: ' + esc(DATA.source) + ', snapshot ' + esc(DATA.as_of) + '. “Records no token” is what the snapshot\u2019s record shows — a protocol may still have a token its record does not carry. Farm plans are a starting point, not financial advice; never pay to claim an airdrop.</footer>';
   }
 
   function controls() {
@@ -136,6 +166,7 @@
       '<select aria-label="Chain" id="chain">' + chainOpts + '</select>' +
       '<select aria-label="Sort" id="sort">' + sortOpts + '</select>' +
       '<label class="check"><input type="checkbox" id="watch"' + (state.watchOnly ? ' checked' : '') + '> Watchlist only</label>' +
+      '<label class="check"><input type="checkbox" id="below"' + (state.belowFloor ? ' checked' : '') + '> Below floor only</label>' +
       '<span class="count" id="count"></span>' +
       '</div>'
     );
@@ -159,14 +190,21 @@
         '</tr>'
       );
     }).join('');
+    // The active sort column shows its direction; the rest stay plain.
+    function sortTh(key, label) {
+      var active = state.sort === key;
+      var arrow = active ? (state.dir === -1 ? ' ▼' : ' ▲') : '';
+      var aria = active ? ' aria-sort="' + (state.dir === -1 ? 'descending' : 'ascending') + '"' : '';
+      return '<th class="num sortable" data-sort="' + key + '"' + aria + '>' + label + arrow + '</th>';
+    }
     return (
       header() + controls() +
       '<table><thead><tr>' +
       '<th>#</th><th>Protocol</th><th>Chains</th>' +
-      '<th class="num sortable" data-sort="tvl">TVL</th>' +
-      '<th class="num sortable" data-sort="growth">7d change</th>' +
-      '<th class="num sortable" data-sort="age">Age</th>' +
-      '<th class="num sortable" data-sort="implied">Implied value</th>' +
+      sortTh('tvl', 'TVL') +
+      sortTh('growth', '7d change') +
+      sortTh('age', 'Age') +
+      sortTh('implied', 'Implied value') +
       '<th class="num">Implied / TVL</th>' +
       '</tr></thead><tbody>' + (body || '<tr><td colspan="8" class="empty">No protocol matches those filters.</td></tr>') + '</tbody></table>' +
       footer()
@@ -230,7 +268,7 @@
     var sens = (DATA.sensitivity||[]).map(function(s) {
       return '<tr><td class="num">'+s.rank+'</td><td>'+esc(s.name)+'</td><td class="num">'+usd.format(s.conservative)+'</td><td class="num">'+usd.format(s.base)+'</td><td class="num">'+usd.format(s.generous)+'</td><td class="num">'+(s.rankLow===s.rankHigh?(''+s.rankLow):(s.rankLow+'–'+s.rankHigh))+'</td></tr>';
     }).join('');
-    return header()+'<section class="method"><h2>Transparent valuation</h2><p class="formula">TVL × peer multiple × growth × tracking maturity × chain breadth</p><p>Calibrate from positive market-cap records at or above the watchlist TVL floor, excluding product-like records. Deduplicate by token identifier (symbol fallback; highest TVL wins). Bound each market-cap/TVL ratio to 0.05–2.00; compute the overall median, then shrink each family median towards it with weight n/(n+12). If no peer exists, use 0.30 as an explicit fallback.</p><p>Global peer pool: <strong>'+g.n+'</strong> peers · raw median <strong>'+fmt3(g.rawMedian)+'×</strong> · bounded median <strong>'+fmt3(g.median)+'×</strong> · IQR <strong>'+(g.q1===null?'n/a':g.q1.toFixed(3)+'–'+g.q3.toFixed(3))+'</strong> · clipped <strong>'+g.clipped+'</strong> · used multiple <strong>'+g.multiple.toFixed(3)+'×</strong></p><table><thead><tr><th>Family</th><th>Peers</th><th>Raw median</th><th>Bounded median</th><th>IQR</th><th>Clipped</th><th>Multiple from</th><th>Typical peers</th><th>Used multiple</th></tr></thead><tbody>'+mults+'</tbody></table><p class="hint">Raw median is the median of the unclipped market-cap/TVL ratios; bounded median and IQR are taken after clipping ratios to 0.05–2.00. “Clipped” counts the peers the band cut. Families with no peers fall back to the global median and say so; typical peers are the three records nearest the family median.</p><h3>Scenario sensitivity — top 10</h3><p>Each row re-priced with its family’s lower-quartile multiple (conservative) and upper-quartile multiple (generous), shrunk toward the global quartile the same way the base multiple is. The rank range is the row’s best and worst rank across the three scenarios: a row that stays put is a robust call, one that swings is a calibration artefact wearing a rank.</p><table><thead><tr><th>Rank</th><th>Protocol</th><th>Conservative</th><th>Base</th><th>Generous</th><th>Rank range</th></tr></thead><tbody>'+sens+'</tbody></table><h3>Bounded adjustments</h3><p>Growth: 1 + clamp(7d TVL change, −40%, +60%) × 0.25 / 100 (0.90–1.15); missing = 0%. Maturity: 0.85 + 0.30 × min(tracking age, 1460 days)/1460; missing = 730 days. Breadth: 1 + 0.02 × min(max(chain count−1, 0), 5). These are heuristic, not fitted launch effects.</p><h3>Coverage and limitations</h3><p>All '+DATA.watchlist_covered+' official watchlist rows are included; '+DATA.outside_size+' more pass observable category, name and token-field screens. '+DATA.early_size+' are below the floor. Parent-protocol relationships are absent from the snapshot, so outside-watchlist candidates remain provisional. No token recorded is not proof of no token.</p><p>Current circulating cap is a proxy for conditional launch market cap, not FDV or historical launch calibration. TVL can be duplicated or driven by incentives; category labels, short-term TVL changes and tracking age are imperfect. No airdrop probability, distribution or return is inferred. The model is deterministic and uses only sealed input.</p></section>'+footer();
+    return header()+'<section class="method"><h2>Transparent valuation</h2><p class="formula">TVL × peer multiple × growth × tracking maturity × chain breadth</p><p>Calibrate from positive market-cap records at or above the watchlist TVL floor, excluding product-like records. Deduplicate by token identifier (symbol fallback; highest TVL wins). Bound each market-cap/TVL ratio to 0.05–2.00; compute the overall median, then shrink each family median towards it with weight n/(n+12). If no peer exists, use 0.30 as an explicit fallback.</p><p>Global peer pool: <strong>'+g.n+'</strong> peers · raw median <strong>'+fmt3(g.rawMedian)+'×</strong> · bounded median <strong>'+fmt3(g.median)+'×</strong> · IQR <strong>'+(g.q1===null?'n/a':g.q1.toFixed(3)+'–'+g.q3.toFixed(3))+'</strong> · clipped <strong>'+g.clipped+'</strong> · used multiple <strong>'+g.multiple.toFixed(3)+'×</strong></p><table><thead><tr><th>Family</th><th>Peers</th><th>Raw median</th><th>Bounded median</th><th>IQR</th><th>Clipped</th><th>Multiple from</th><th>Typical peers</th><th>Used multiple</th></tr></thead><tbody>'+mults+'</tbody></table><p class="hint">Raw median is the median of the unclipped market-cap/TVL ratios; bounded median and IQR are taken after clipping ratios to 0.05–2.00. “Clipped” counts the peers the band cut. Families with no peers fall back to the global median and say so; typical peers are the three records nearest the family median.</p><h3>Scenario sensitivity — top 10</h3><p>Each row re-priced with its family’s lower-quartile multiple (conservative) and upper-quartile multiple (generous), shrunk toward the global quartile the same way the base multiple is. The rank range is the row’s best and worst rank across the three scenarios: a row that stays put is a robust call, one that swings is a calibration artefact wearing a rank.</p><table><thead><tr><th>Rank</th><th>Protocol</th><th>Conservative</th><th>Base</th><th>Generous</th><th>Rank range</th></tr></thead><tbody>'+sens+'</tbody></table><h3>Bounded adjustments</h3><p>Growth: 1 + clamp(7d TVL change, −40%, +60%) × 0.25 / 100 (0.90–1.15); missing = 0%. Maturity: 0.85 + 0.30 × min(tracking age, 1460 days)/1460; missing = 730 days. Breadth: 1 + 0.02 × min(max(chain count−1, 0), 5). These are heuristic, not fitted launch effects.</p><h3>Coverage — every record accounted for</h3><p>The four buckets below are mutually exclusive and sum to the snapshot total of <strong>'+DATA.coverage.total+'</strong> records, so nothing is double-counted or quietly dropped. The live view shows priced records except CEX rows ('+DATA.coverage.pricedNonCex+' of '+DATA.coverage.priced+'); that is a different cut of the same priced bucket, not a mismatch.</p><table><thead><tr><th>Bucket</th><th>Records</th><th>Rule</th></tr></thead><tbody><tr><td>Ranked, on the watchlist</td><td class="num">'+DATA.coverage.rankedWatchlist+'</td><td>Every watchlist slug, always on the board</td></tr><tr><td>Ranked, outside the watchlist, below the floor</td><td class="num">'+DATA.coverage.rankedOutsideBelowFloor+'</td><td>Pre-token, not product-like, TVL under $'+(DATA.floor_usd/1000000)+'M</td></tr><tr><td>Ranked, outside the watchlist, at or above the floor</td><td class="num">'+DATA.coverage.rankedOutsideAtFloor+'</td><td>Pre-token, not product-like, TVL at or above $'+(DATA.floor_usd/1000000)+'M — admitted by the observable rule, parent relation unverifiable from the snapshot, so they stay provisional</td></tr><tr><td>Not ranked: pre-token but product-like</td><td class="num">'+DATA.coverage.preTokenExcluded+'</td><td>Wrapped, staked, bridged, versioned or exchange product of a token that already trades</td></tr><tr><td>Not ranked: priced live token</td><td class="num">'+DATA.coverage.priced+'</td><td>Positive market cap; shown in the Priced tokens view except CEX rows</td></tr><tr><td>Not ranked: token evidence, unpriced</td><td class="num">'+DATA.coverage.unpricedTokenEvidence+'</td><td>A Gecko id or symbol is recorded but no positive market cap</td></tr></tbody></table><h3>Limitations</h3><p>All '+DATA.watchlist_covered+' official watchlist rows are included; '+DATA.outside_size+' more pass observable category, name and token-field screens. '+DATA.early_size+' are below the floor. Parent-protocol relationships are absent from the snapshot, so outside-watchlist candidates remain provisional. No token recorded is not proof of no token. “Unverified” on a board row means outside the watchlist: the row passed the observable screens, but the snapshot cannot prove it is an independent launch.</p><p>Current circulating cap is a proxy for conditional launch market cap, not FDV or historical launch calibration. TVL can be duplicated or driven by incentives; category labels, short-term TVL changes and tracking age are imperfect. No airdrop probability, distribution or return is inferred. The model is deterministic and uses only sealed input.</p></section>'+footer();
   }
 
   function render() {
@@ -238,12 +276,14 @@
     if (state.view === 'detail' && state.slug) {
       var row = null;
       DATA.rows.forEach(function (r) { if (r.slug === state.slug) row = r; });
+      if (!row) { state.view = 'board'; state.slug = null; }
       html = row ? detailView(row) : boardView();
     } else if (state.view === 'live') html = liveView();
     else if (state.view === 'method') html = methodView();
     else html = boardView();
     app.className = state.view === 'detail' ? 'detail-page' : '';
     app.innerHTML = html;
+    syncUrl();
     bind();
     var count = document.getElementById('count');
     if (count && (state.view === 'board')) count.textContent = filtered().length + ' of ' + DATA.rows.length + ' shown';
@@ -262,6 +302,8 @@
     if (chain) chain.addEventListener('change', function () { state.chain = chain.value; render(); });
     var watch = document.getElementById('watch');
     if (watch) watch.addEventListener('change', function () { state.watchOnly = watch.checked; render(); });
+    var below = document.getElementById('below');
+    if (below) below.addEventListener('change', function () { state.belowFloor = below.checked; render(); });
     var sort = document.getElementById('sort');
     if (sort) sort.addEventListener('change', function () { state.sort = sort.value; state.dir = sort.value === 'rank' ? 1 : -1; render(); });
     app.querySelectorAll('th.sortable').forEach(function (th) {

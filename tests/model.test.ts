@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildRadar, boardIssue, parseSnapshot, calibrate, isRankable, impliedValue,
-  MODEL, farmSteps, categoryFamily,
+  MODEL, farmSteps, categoryFamily, coverage,
 } from '../lib/model.ts';
 import type { Snapshot, SnapshotProtocol } from '../lib/model.ts';
 
@@ -148,6 +148,22 @@ test('conditional farm plans satisfy step gate', () => {
     assert.match(steps.join(' '), /Time:|time:/);
     assert.match(steps.join(' '), /Cost:|cost:/);
   }
+});
+
+test('coverage partition is mutually exclusive and sums to the total', () => {
+  const { board, radar } = buildRadar(parseSnapshot(JSON.stringify(fixture)));
+  const c = coverage(fixture, board);
+  // Fixture: 140 rankable + 20 priced + 4 product-like + 1 symbol-only = 165 records.
+  assert.equal(c.total, 165);
+  assert.equal(c.ranked, 140);
+  assert.equal(c.preTokenExcluded, 4);
+  assert.equal(c.priced, 20);
+  assert.equal(c.unpricedTokenEvidence, 1);
+  assert.equal(c.ranked + c.preTokenExcluded + c.priced + c.unpricedTokenEvidence, c.total);
+  assert.equal(c.rankedWatchlist, 40);
+  assert.equal(c.rankedOutside, 100);
+  assert.equal(radar.coverage.total, c.total);
+  assert.equal(radar.coverage.ranked, c.ranked);
 });
 
 test('farm plans follow the real business path, not a generic route', () => {

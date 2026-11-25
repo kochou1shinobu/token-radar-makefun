@@ -82,7 +82,7 @@ export function categoryFamily(category: string | null): { family: string } {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-7';
+export const MODEL_VERSION = 'radar-8';
 
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
@@ -162,6 +162,27 @@ export interface SensitivityRow {
   rankHigh: number;
 }
 
+/**
+ * Coverage: every record in the snapshot accounted for exactly once. The four
+ * top-level buckets are mutually exclusive and sum to the snapshot total, so a
+ * reader can check that nothing was double-counted or quietly dropped. The live
+ * view shows priced records except CEX rows, which is why its count (119) is not
+ * the priced total (128) — the two numbers are different cuts, not a mismatch.
+ */
+export interface Coverage {
+  total: number;
+  ranked: number;
+  rankedWatchlist: number;
+  rankedOutside: number;
+  rankedOutsideBelowFloor: number;
+  rankedOutsideAtFloor: number;
+  preTokenExcluded: number;
+  priced: number;
+  pricedNonCex: number;
+  pricedCex: number;
+  unpricedTokenEvidence: number;
+}
+
 /** Everything the dashboard needs: the board, the live set, and the model it runs. */
 export interface RadarData {
   as_of: string;
@@ -178,6 +199,7 @@ export interface RadarData {
   unpriced_token_records: number;
   live_size: number;
   total_pre_token: number;
+  coverage: Coverage;
   sensitivity: SensitivityRow[];
   rows: RadarRow[];
   live: LiveRow[];
@@ -553,6 +575,30 @@ export function sensitivityRows(snapshot: Snapshot, model: ModelConstants, board
   }));
 }
 
+/** The snapshot's full partition: every record in exactly one bucket. */
+export function coverage(snapshot: Snapshot, board: BoardRow[]): Coverage {
+  const watch = new Set(snapshot.watchlist);
+  const ranked = new Set(board.map(r => r.slug));
+  const preTokenExcluded = snapshot.protocols.filter(p => isPreToken(p) && !ranked.has(p.slug)).length;
+  const priced = snapshot.protocols.filter(p => p.mcap_usd !== null && p.mcap_usd > 0);
+  const pricedNonCex = priced.filter(p => p.category !== 'CEX').length;
+  const unpriced = snapshot.protocols.filter(p => !isPreToken(p) && !(p.mcap_usd !== null && p.mcap_usd > 0)).length;
+  const outside = board.filter(r => !r.on_watchlist);
+  return {
+    total: snapshot.protocols.length,
+    ranked: board.length,
+    rankedWatchlist: board.filter(r => r.on_watchlist).length,
+    rankedOutside: outside.length,
+    rankedOutsideBelowFloor: outside.filter(r => r.tvl_usd < snapshot.floor_usd).length,
+    rankedOutsideAtFloor: outside.filter(r => r.tvl_usd >= snapshot.floor_usd).length,
+    preTokenExcluded,
+    priced: priced.length,
+    pricedNonCex,
+    pricedCex: priced.length - pricedNonCex,
+    unpricedTokenEvidence: unpriced,
+  };
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   model = calibrate(snapshot, model);
@@ -574,6 +620,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     unpriced_token_records: snapshot.protocols.filter(p => !isPreToken(p) && !(p.mcap_usd !== null && p.mcap_usd > 0)).length,
     live_size: live.length,
     total_pre_token: snapshot.protocols.filter(isPreToken).length,
+    coverage: coverage(snapshot, board),
     sensitivity: sensitivityRows(snapshot, model, board),
     rows: board.map((row) => ({
       rank: row.rank,
