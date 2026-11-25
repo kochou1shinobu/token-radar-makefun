@@ -1,12 +1,14 @@
-// A token-radar-01 entry (Node 22, standard library only), model radar-3.
+// A token-radar-01 entry (Node 22, standard library only), model radar-4.
 //
-// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>), scores every
-// pre-token protocol with the model in lib/model.ts, writes the ranked board to /output/board.json, and
-// copies this repository's dashboard/ and screenshots/ to /output. Last, it writes /output/dossier.json,
-// the summary the judge reads, with the vendored make.fun library.
+// The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
+// scores every pre-token protocol with the model in lib/model.ts, writes the ranked
+// board to /output/board.json, and copies this repository's dashboard/ and screenshots/
+// to /output. Last, it writes /output/dossier.json, the summary the judge reads, with
+// the vendored make.fun library.
 //
-// The dashboard is a static page, no framework and no network: dashboard/index.html, dashboard/app.css
-// and dashboard/app.js read /output/data.js, which this program writes from the same board.
+// The dashboard is a static page, no framework and no network: dashboard/index.html,
+// dashboard/app.css and dashboard/app.js read /output/data.js, which this program
+// writes from the same board.
 //
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
@@ -15,7 +17,6 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
-
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 
@@ -38,6 +39,7 @@ if (!existsSync(inputFile)) {
   process.stderr.write(`token radar: no snapshot at ${inputFile}: pass --input <snapshot.json|directory> or mount the sealed /input\n`);
   process.exit(2);
 }
+
 const out = resolve(arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output'));
 const preview = process.argv.includes('--preview');
 if (!preview && !existsSync(join(here, 'vendor/makefun-board.ts'))) throw new Error('Retain the official kit vendor/makefun-board.ts');

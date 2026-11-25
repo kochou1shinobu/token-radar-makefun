@@ -1,5 +1,11 @@
-// radar-3: bounded, snapshot-only peer calibration; no launch-probability claim.
-/** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
+// radar-4 model: snapshot-only peer calibration with published peer evidence.
+// Every number on the board is derived from the sealed snapshot alone: no
+// hardcoded per-protocol values, no launch-probability claim. The multiple a
+// protocol gets is the median market-cap/TVL of already-priced peers in its
+// category family, clipped to a sane band and shrunk toward the global median
+// when the family sample is small.
+
+/** One protocol record: exactly the ten fields the sealed snapshot carries. */
 export interface SnapshotProtocol {
   slug: string;
   name: string;
@@ -51,14 +57,14 @@ export const MODEL: ModelConstants = {
   breadth_max_extra_chains: 5,
 };
 
-/** Category family vocabulary; used for peer groups, not fixed valuation multiples. */
+/** Category families: peer groups for calibration, not fixed valuation multiples. */
 export const CATEGORY_FAMILIES: { match: string[]; family: string }[] = [
   { match: ['dex', 'aggregator', 'derivative', 'perpetual', 'options', 'prediction'], family: 'trading venue' },
   { match: ['lend', 'cdp', 'collateral', 'money market'], family: 'lending' },
   { match: ['yield', 'farm', 'vault', 'curator', 'allocator', 'rwa', 'stable', 'insurance', 'infra', 'service'], family: 'yield & infrastructure' },
 ];
 
-/** The base multiple one category gets, and the family it fell in. */
+/** Which calibration family a category falls in. */
 export function categoryFamily(category: string | null): { family: string } {
   const c = (category ?? '').toLowerCase();
   for (const row of CATEGORY_FAMILIES) {
@@ -68,8 +74,7 @@ export function categoryFamily(category: string | null): { family: string } {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
-
+export const MODEL_VERSION = 'radar-4';
 
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
@@ -166,7 +171,7 @@ function finite(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
-/** A whole day count from `from` to `to`, clamped at zero; null when either date is absent or bad. */
+/** Whole days from `listedAt` to `asOf`, clamped at zero; null when either date is absent or bad. */
 export function ageDays(asOf: string, listedAt: string | null): number | null {
   if (listedAt === null) return null;
   const a = Date.parse(`${asOf}T00:00:00Z`);
@@ -211,8 +216,8 @@ export function isPreToken(p: SnapshotProtocol): boolean {
 
 /**
  * Whether a protocol is one the board may rank: pre-token, and not a wrapped, staked, bridged or
- * versioned product of a token that already trades — observable exclusions used by the house, except that parentProtocol is unavailable.
- * Outside-watchlist rows are provisional, not proven independent launches.
+ * versioned product of a token that already trades. The snapshot carries no parentProtocol field,
+ * so outside-watchlist rows are provisional candidates, not proven independent launches.
  */
 export function isRankable(p: SnapshotProtocol): boolean {
   if (!isPreToken(p)) return false;
@@ -227,18 +232,29 @@ function isProductLike(p: SnapshotProtocol): boolean {
   return false;
 }
 
-
-/** Current circulating market-cap/TVL proxies, not historical launch FDVs. */
+/** Calibration evidence for one peer group: sample size, the clipped median ratio, the shrunk multiple. */
 export interface PeerCalibration { n: number; median: number | null; multiple: number }
+
 const FAMILIES = ['trading venue', 'lending', 'yield & infrastructure', 'other'];
+
+/** Peer ratios are clipped to this band before any median is taken, so one absurd print cannot rule a family. */
 const boundedRatio = (r: number) => Math.max(0.05, Math.min(2, r));
+
 function median(xs: number[]): number | null {
   if (!xs.length) return null;
   const a = [...xs].sort((x, y) => x - y), i = Math.floor(a.length / 2);
   return a.length % 2 ? a[i]! : (a[i - 1]! + a[i]!) / 2;
 }
+
+/**
+ * Calibrate the multiples from the snapshot's own priced protocols: records at or above the
+ * floor with a positive market cap, deduplicated per token (gecko id first, then symbol, then
+ * slug; the largest-TVL record wins, because market cap is a token-level figure repeated across
+ * a protocol's versioned pools). Each family's multiple is its clipped median ratio shrunk
+ * toward the global median with weight n/(n+12); these are current circulating ratios, not
+ * historical launch FDVs, and the model says so wherever it states them.
+ */
 export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): ModelConstants {
-  // Token identifiers are useful for deduplicating token-level market caps across protocol versions.
   const unique = new Map<string, SnapshotProtocol>();
   for (const p of snapshot.protocols) {
     if (!(p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd >= snapshot.floor_usd) || isProductLike(p)) continue;
@@ -258,10 +274,12 @@ export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): Mo
   return { ...model, global_peer: { n: ratios.length, median: median(ratios), multiple: center }, peer_multiples: families };
 }
 
-/** The snapshot's protocol by slug. */
+/** The snapshot's protocols indexed by slug. */
 function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
   return new Map(protocols.map((p) => [p.slug, p]));
 }
+
+const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 
 /** The protocols the board ranks, strongest first, with ranks 1..n. */
 export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): BoardRow[] {
@@ -274,7 +292,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
     if (!p || !isPreToken(p)) throw new SnapshotError(`Watchlist conflicts with token record: ${slug}`);
     chosen.set(slug, p);
   }
-  // Additional provisional candidates, including below-floor and omitted above-floor rows.
+  // Additional provisional candidates, including below-floor rows and any the watchlist omitted.
   for (const p of snapshot.protocols) {
     if (!chosen.has(p.slug) && isRankable(p)) chosen.set(p.slug, p);
   }
@@ -310,8 +328,6 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   }));
 }
 
-const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
-
 /** The first chain a protocol names, or a neutral phrase. */
 function chainOf(p: SnapshotProtocol): string {
   return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
@@ -326,7 +342,7 @@ function capitalFor(p: SnapshotProtocol): number {
   return 50;
 }
 
-/** How long to hold, from the protocol's age: younger protocols get a longer qualifying window. */
+/** How long to hold, from the protocol's tracked age: younger protocols get a longer review window. */
 function holdDaysFor(age: number | null): number {
   if (age === null) return 30;
   if (age < 180) return 60;
@@ -334,7 +350,7 @@ function holdDaysFor(age: number | null): number {
   return 30;
 }
 
-/** Plans are conditional because the snapshot contains no asset, product or reward metadata. */
+/** The one step that differs by product type; every plan stays conditional, because the snapshot holds no asset, product or reward metadata. */
 function actionFor(p: SnapshotProtocol, capital: number): string {
   const c = (p.category ?? '').toLowerCase();
   if (/lend|cdp|collateral|money market/.test(c)) return `If a supported lending market is open, supply up to $${capital} of a supported asset, check utilization and withdrawal liquidity; avoid borrowing just for points.`;
@@ -348,6 +364,7 @@ function actionFor(p: SnapshotProtocol, capital: number): string {
   if (/insurance/.test(c)) return `Inspect real coverage, exclusions and premium quotes. Buy cover only for an existing risk and only if the premium fits the $${capital} ceiling; do not assume a policy NFT exists.`;
   return `Identify the actual public user action and its supported assets. If there is no accessible user-facing product, stay on the watchlist; do not deposit into an unverified contract.`;
 }
+
 export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
   const chain = chainOf(p), capital = capitalFor(p), hold = holdDaysFor(age);
   const fee = chain === 'Ethereum' ? 15 : 5;

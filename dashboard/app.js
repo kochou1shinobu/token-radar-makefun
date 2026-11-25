@@ -1,9 +1,10 @@
-// Token Launch Radar's dashboard (model radar-3). It reads window.RADAR (written beside dashboard/
-// by main.ts) and renders the ranked board, a live-token view kept apart from the ranking, a method
-// page that states the model, and a detail view for every protocol with its model breakdown and
-// farm plan. No network: every byte it shows is in data.js. The detail view recomputes the implied
-// value from the row's own figures with the same formula lib/model.ts uses, and says so when the
-// recomputation matches the board — the page and the code are the same arithmetic.
+// Token Launch Radar's dashboard (model radar-4). It reads window.RADAR (written beside
+// dashboard/ by main.ts) and renders the ranked board, a live-token view kept apart from the
+// ranking, a method page that states the model, and a detail view for every protocol with its
+// model breakdown and farm plan. No network: every byte it shows is in data.js. The detail
+// view recomputes the implied value from the row's own figures with the same formula
+// lib/model.ts uses, and says so when the recomputation matches the board — the page and the
+// code are the same arithmetic.
 (function () {
   'use strict';
 
@@ -47,7 +48,7 @@
     });
   }
 
-  // The model, recomputed in the page: identical constants and formula to lib/model.ts (radar-3).
+  // The model, recomputed in the page: identical constants and formula to lib/model.ts (radar-4).
   function impliedOf(row) {
     var m = DATA.model;
     var growth = Math.min(m.growth_cap, Math.max(m.growth_floor, row.change_7d === null || row.change_7d === undefined ? 0 : row.change_7d));
