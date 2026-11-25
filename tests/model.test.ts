@@ -1,11 +1,108 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRadar, boardIssue, parseSnapshot, calibrate, isRankable, impliedValue, MODEL, farmSteps } from '../lib/model.ts';
+import {
+  buildRadar, boardIssue, parseSnapshot, calibrate, isRankable, impliedValue,
+  MODEL, farmSteps,
+} from '../lib/model.ts';
 import type { Snapshot, SnapshotProtocol } from '../lib/model.ts';
-const proto = (i:number, overrides:Partial<SnapshotProtocol>={}):SnapshotProtocol => ({slug:`test-${i}`,name:`Demo Protocol ${i}`,category:i%2?'Lending':'Dexes',chains:['Base'],tvl_usd:5_000_000+i*1_000_000,change_7d:i%5?10:null,mcap_usd:null,listed_at:'2024-01-01',gecko_id:null,symbol:null,...overrides});
-export const fixture:Snapshot={as_of:'2026-11-14',source:'SYNTHETIC TEST FIXTURE — not competition data',floor_usd:50_000_000,protocols:[...Array.from({length:140},(_,i)=>proto(i)),...Array.from({length:20},(_,i)=>proto(200+i,{mcap_usd:100_000_000,gecko_id:`coin-${i}`,symbol:`C${i}`})),proto(300,{category:'Bridge'}),proto(301,{name:'Wrapped Demo'}),proto(302,{name:'Demo v2'}),proto(303,{symbol:'ONLY'}),proto(304,{name:'Binance Example'})],watchlist:Array.from({length:40},(_,i)=>`test-${100+i}`)};
-test('coverage, ranks, caps, deterministic and separate token records',()=>{const snap=parseSnapshot(JSON.stringify(fixture));const a=buildRadar(snap),b=buildRadar(snap);assert.deepEqual(a,b);assert.equal(boardIssue(a.board,snap),null);assert.equal(a.board.length,140);assert.equal(a.radar.watchlist_covered,40);assert.equal(a.radar.early_size,45);assert.equal(a.radar.live_size,20);assert.equal(a.radar.unpriced_token_records,1);assert.ok(a.board.every(r=>r.mcap_usd===null));});
-test('peer calibration and outlier caps',()=>{const m=calibrate(fixture);assert.equal(m.global_peer!.n,20);assert.ok(m.global_peer!.multiple>0&&m.global_peer!.multiple<=2);const p=proto(1,{change_7d:100000,listed_at:null,chains:[]});const v=impliedValue(p,fixture.as_of,m);assert.equal(v.growthMult,1.15);assert.equal(v.maturityMult,1);assert.equal(v.breadthMult,1);assert.equal(calibrate({...fixture,protocols:[]}).global_peer!.multiple,MODEL.default_multiple);});
-test('product and token-field exclusions',()=>{for(const p of fixture.protocols.slice(-5))assert.equal(isRankable(p),false);assert.equal(isRankable(proto(1)),true);});
-test('malformed input and over-cap board rejected',()=>{assert.throws(()=>parseSnapshot(JSON.stringify({...fixture,protocols:[...fixture.protocols,fixture.protocols[0]]})),/Duplicate/);assert.throws(()=>parseSnapshot(JSON.stringify({...fixture,watchlist:['missing']})),/watchlist/);const {board}=buildRadar(fixture);board[0].implied_value_usd=100_000_000_000_001;assert.match(boardIssue(board,fixture)!,/implied value/);});
-test('conditional farm plans satisfy step gate',()=>{for(const category of ['Dexes','Dex Aggregator','Lending','Derivatives','Insurance','RWA','Yield','Stablecoins','Prediction Market',null]) { const steps=farmSteps(proto(1,{category}),100);assert.equal(steps.length,6);assert.ok(steps.every(s=>s.length>=20&&s.length<=600));assert.match(steps.join(' '),/Time:|time:/);assert.match(steps.join(' '),/Cost:|cost:/);}});
+
+// One synthetic protocol per index; even rows are Dexes, odd rows Lending, so
+// calibration and ranking get a mixed field to work on.
+const proto = (i: number, overrides: Partial<SnapshotProtocol> = {}): SnapshotProtocol => ({
+  slug: `test-${i}`,
+  name: `Demo Protocol ${i}`,
+  category: i % 2 ? 'Lending' : 'Dexes',
+  chains: ['Base'],
+  tvl_usd: 5_000_000 + i * 1_000_000,
+  change_7d: i % 5 ? 10 : null,
+  mcap_usd: null,
+  listed_at: '2024-01-01',
+  gecko_id: null,
+  symbol: null,
+  ...overrides,
+});
+
+// 140 unpriced protocols (the rankable field), 20 priced ones (the live set),
+// plus five names that must be excluded as products or token fields.
+export const fixture: Snapshot = {
+  as_of: '2026-11-14',
+  source: 'SYNTHETIC TEST FIXTURE — not competition data',
+  floor_usd: 50_000_000,
+  protocols: [
+    ...Array.from({ length: 140 }, (_, i) => proto(i)),
+    ...Array.from({ length: 20 }, (_, i) => proto(200 + i, {
+      mcap_usd: 100_000_000, gecko_id: `coin-${i}`, symbol: `C${i}`,
+    })),
+    proto(300, { category: 'Bridge' }),
+    proto(301, { name: 'Wrapped Demo' }),
+    proto(302, { name: 'Demo v2' }),
+    proto(303, { symbol: 'ONLY' }),
+    proto(304, { name: 'Binance Example' }),
+  ],
+  watchlist: Array.from({ length: 40 }, (_, i) => `test-${100 + i}`),
+};
+
+test('coverage, ranks, caps, deterministic and separate token records', () => {
+  const snap = parseSnapshot(JSON.stringify(fixture));
+  const a = buildRadar(snap);
+  const b = buildRadar(snap);
+  assert.deepEqual(a, b);
+  assert.equal(boardIssue(a.board, snap), null);
+  assert.equal(a.board.length, 140);
+  assert.equal(a.radar.watchlist_covered, 40);
+  assert.equal(a.radar.early_size, 45);
+  assert.equal(a.radar.live_size, 20);
+  assert.equal(a.radar.unpriced_token_records, 1);
+  assert.ok(a.board.every(r => r.mcap_usd === null));
+});
+
+test('peer calibration and outlier caps', () => {
+  const m = calibrate(fixture);
+  assert.equal(m.global_peer!.n, 20);
+  assert.ok(m.global_peer!.multiple > 0 && m.global_peer!.multiple <= 2);
+  const p = proto(1, { change_7d: 100000, listed_at: null, chains: [] });
+  const v = impliedValue(p, fixture.as_of, m);
+  assert.equal(v.growthMult, 1.15);
+  assert.equal(v.maturityMult, 1);
+  assert.equal(v.breadthMult, 1);
+  assert.equal(
+    calibrate({ ...fixture, protocols: [] }).global_peer!.multiple,
+    MODEL.default_multiple,
+  );
+});
+
+test('product and token-field exclusions', () => {
+  for (const p of fixture.protocols.slice(-5)) assert.equal(isRankable(p), false);
+  assert.equal(isRankable(proto(1)), true);
+});
+
+test('malformed input and over-cap board rejected', () => {
+  assert.throws(
+    () => parseSnapshot(JSON.stringify({
+      ...fixture,
+      protocols: [...fixture.protocols, fixture.protocols[0]],
+    })),
+    /Duplicate/,
+  );
+  assert.throws(
+    () => parseSnapshot(JSON.stringify({ ...fixture, watchlist: ['missing'] })),
+    /watchlist/,
+  );
+  const { board } = buildRadar(fixture);
+  board[0].implied_value_usd = 100_000_000_000_001;
+  assert.match(boardIssue(board, fixture)!, /implied value/);
+});
+
+test('conditional farm plans satisfy step gate', () => {
+  const categories: Array<string | null> = [
+    'Dexes', 'Dex Aggregator', 'Lending', 'Derivatives', 'Insurance', 'RWA',
+    'Yield', 'Stablecoins', 'Prediction Market', null,
+  ];
+  for (const category of categories) {
+    const steps = farmSteps(proto(1, { category }), 100);
+    assert.equal(steps.length, 6);
+    assert.ok(steps.every(s => s.length >= 20 && s.length <= 600));
+    assert.match(steps.join(' '), /Time:|time:/);
+    assert.match(steps.join(' '), /Cost:|cost:/);
+  }
+});
