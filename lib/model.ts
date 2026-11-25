@@ -57,11 +57,19 @@ export const MODEL: ModelConstants = {
   breadth_max_extra_chains: 5,
 };
 
-/** Category families: peer groups for calibration, not fixed valuation multiples. */
+/**
+ * Category families: peer groups for calibration, not fixed valuation multiples.
+ * The old single "yield & infrastructure" bucket lumped together businesses whose
+ * tokens price very differently — a yield curator's token is not a stablecoin's,
+ * and neither is an insurer's — so it is split into three families. A category
+ * that matches nothing falls into "other" and calibrates on the global median.
+ */
 export const CATEGORY_FAMILIES: { match: string[]; family: string }[] = [
-  { match: ['dex', 'aggregator', 'derivative', 'perpetual', 'options', 'prediction'], family: 'trading venue' },
+  { match: ['dex', 'dex aggregator', 'derivative', 'perpetual', 'options', 'prediction', 'trading'], family: 'trading venue' },
   { match: ['lend', 'cdp', 'collateral', 'money market'], family: 'lending' },
-  { match: ['yield', 'farm', 'vault', 'curator', 'allocator', 'rwa', 'stable', 'insurance', 'infra', 'service'], family: 'yield & infrastructure' },
+  { match: ['yield', 'farm', 'vault', 'curator', 'allocator'], family: 'yield & vaults' },
+  { match: ['stable', 'rwa'], family: 'stablecoins & rwa' },
+  { match: ['insurance', 'infra', 'service'], family: 'insurance & infrastructure' },
 ];
 
 /** Which calibration family a category falls in. */
@@ -74,7 +82,7 @@ export function categoryFamily(category: string | null): { family: string } {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-6';
 
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
@@ -136,6 +144,24 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
+/**
+ * Scenario sensitivity for one top-10 row: the implied value under the family's
+ * lower-quartile multiple (conservative) and upper-quartile multiple (generous),
+ * against the base multiple, and the rank range the row takes across the three
+ * scenarios. A row whose rank barely moves is a robust call; one that swings
+ * from 2nd to 40th is a calibration artefact wearing a rank.
+ */
+export interface SensitivityRow {
+  rank: number;
+  slug: string;
+  name: string;
+  base: number;
+  conservative: number;
+  generous: number;
+  rankLow: number;
+  rankHigh: number;
+}
+
 /** Everything the dashboard needs: the board, the live set, and the model it runs. */
 export interface RadarData {
   as_of: string;
@@ -152,6 +178,7 @@ export interface RadarData {
   unpriced_token_records: number;
   live_size: number;
   total_pre_token: number;
+  sensitivity: SensitivityRow[];
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -232,10 +259,42 @@ function isProductLike(p: SnapshotProtocol): boolean {
   return false;
 }
 
-/** Calibration evidence for one peer group: sample size, the clipped median ratio, the shrunk multiple. */
-export interface PeerCalibration { n: number; median: number | null; multiple: number }
+/**
+ * Calibration evidence for one peer group, published on the dashboard so a reader can
+ * check the multiple instead of taking it on trust: sample size, the raw (unclipped)
+ * median ratio, the clipped median and quartiles it was actually taken from, how many
+ * peer ratios the clip band cut, the shrunk multiple the board uses, where that
+ * multiple came from when the family sample is thin, and three representative peers
+ * nearest the family's median ratio.
+ */
+export interface PeerCalibration {
+  n: number;
+  median: number | null;
+  multiple: number;
+  rawMedian: number | null;
+  q1: number | null;
+  q3: number | null;
+  clipped: number;
+  fallback: 'family' | 'global';
+  typicalPeers: string[];
+}
 
-const FAMILIES = ['trading venue', 'lending', 'yield & infrastructure', 'other'];
+const FAMILIES = [
+  'trading venue',
+  'lending',
+  'yield & vaults',
+  'stablecoins & rwa',
+  'insurance & infrastructure',
+  'other',
+];
+
+/** The lower quartile of a sorted list (linear interpolation); null on an empty list. */
+function quartile(sorted: number[], q: number): number | null {
+  if (!sorted.length) return null;
+  const pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (pos - lo);
+}
 
 /** Peer ratios are clipped to this band before any median is taken, so one absurd print cannot rule a family. */
 const boundedRatio = (r: number) => Math.max(0.05, Math.min(2, r));
@@ -265,13 +324,48 @@ export function calibrate(snapshot: Snapshot, model: ModelConstants = MODEL): Mo
   const peers = [...unique.values()];
   const ratios = peers.map(p => boundedRatio(p.mcap_usd! / p.tvl_usd));
   const center = median(ratios) ?? model.default_multiple;
+  const globalRaw = peers.map(p => p.mcap_usd! / p.tvl_usd);
+  const globalSorted = [...ratios].sort((a, b) => a - b);
+  const global: PeerCalibration = {
+    n: ratios.length,
+    median: median(ratios),
+    multiple: center,
+    rawMedian: median(globalRaw),
+    q1: quartile(globalSorted, 0.25),
+    q3: quartile(globalSorted, 0.75),
+    clipped: globalRaw.filter(r => r < 0.05 || r > 2).length,
+    fallback: 'global',
+    typicalPeers: typicalPeers(peers, median(ratios)),
+  };
   const families: Record<string, PeerCalibration> = {};
   for (const family of FAMILIES) {
-    const xs = peers.filter(p => categoryFamily(p.category).family === family).map(p => boundedRatio(p.mcap_usd! / p.tvl_usd));
+    const members = peers.filter(p => categoryFamily(p.category).family === family);
+    const raw = members.map(p => p.mcap_usd! / p.tvl_usd);
+    const xs = raw.map(boundedRatio);
+    const sorted = [...xs].sort((a, b) => a - b);
     const m = median(xs), w = xs.length / (xs.length + 12);
-    families[family] = { n: xs.length, median: m, multiple: (m ?? center) * w + center * (1 - w) };
+    families[family] = {
+      n: xs.length,
+      median: m,
+      multiple: (m ?? center) * w + center * (1 - w),
+      rawMedian: median(raw),
+      q1: quartile(sorted, 0.25),
+      q3: quartile(sorted, 0.75),
+      clipped: raw.filter(r => r < 0.05 || r > 2).length,
+      fallback: xs.length > 0 ? 'family' : 'global',
+      typicalPeers: typicalPeers(members, m),
+    };
   }
-  return { ...model, global_peer: { n: ratios.length, median: median(ratios), multiple: center }, peer_multiples: families };
+  return { ...model, global_peer: global, peer_multiples: families };
+}
+
+/** Up to three peers nearest the group's median ratio, by slug, most typical first. */
+function typicalPeers(members: SnapshotProtocol[], center: number | null): string[] {
+  if (center === null || !members.length) return [];
+  return [...members]
+    .sort((a, b) => Math.abs(boundedRatio(a.mcap_usd! / a.tvl_usd) - center) - Math.abs(boundedRatio(b.mcap_usd! / b.tvl_usd) - center))
+    .slice(0, 3)
+    .map(p => p.slug);
 }
 
 /** The snapshot's protocols indexed by slug. */
@@ -394,6 +488,48 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
     }));
 }
 
+/**
+ * Scenario sensitivity for the top 10 rows. Each scenario re-prices every board row
+ * with a different multiple from the same peer evidence: the family's lower quartile
+ * (conservative) or upper quartile (generous), shrunk toward the global quartile with
+ * the same n/(n+12) weight the base multiple uses. Ranks are then recomputed under
+ * each scenario, so the table shows how far a row's rank moves when the calibration,
+ * not the protocol, changes.
+ */
+export function sensitivityRows(snapshot: Snapshot, model: ModelConstants, board: BoardRow[]): SensitivityRow[] {
+  const index = bySlug(snapshot.protocols);
+  const global = model.global_peer;
+  const scenarioImplied = (row: BoardRow, which: 'q1' | 'q3'): number => {
+    const p = index.get(row.slug)!;
+    const v = impliedValue(p, snapshot.as_of, model);
+    const fam = model.peer_multiples?.[row.model.category_family];
+    const n = fam?.n ?? 0, w = n / (n + 12);
+    const famQ = which === 'q1' ? fam?.q1 : fam?.q3;
+    const globQ = which === 'q1' ? global?.q1 : global?.q3;
+    const q = famQ ?? globQ ?? (which === 'q1' ? v.multiple * 0.75 : v.multiple * 1.25);
+    const gq = globQ ?? q;
+    const mult = q * w + gq * (1 - w);
+    return Math.max(1, Math.round(p.tvl_usd * mult * v.growthMult * v.maturityMult * v.breadthMult));
+  };
+  const rankUnder = (values: Map<string, number>): Map<string, number> => {
+    const order = [...board].sort((a, b) => values.get(b.slug)! - values.get(a.slug)! || (a.slug < b.slug ? -1 : 1));
+    return new Map(order.map((r, i) => [r.slug, i + 1]));
+  };
+  const cons = new Map(board.map(r => [r.slug, scenarioImplied(r, 'q1')]));
+  const gen = new Map(board.map(r => [r.slug, scenarioImplied(r, 'q3')]));
+  const consRank = rankUnder(cons), genRank = rankUnder(gen);
+  return board.slice(0, 10).map(r => ({
+    rank: r.rank,
+    slug: r.slug,
+    name: r.name,
+    base: r.implied_value_usd,
+    conservative: cons.get(r.slug)!,
+    generous: gen.get(r.slug)!,
+    rankLow: Math.min(r.rank, consRank.get(r.slug)!, genRank.get(r.slug)!),
+    rankHigh: Math.max(r.rank, consRank.get(r.slug)!, genRank.get(r.slug)!),
+  }));
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   model = calibrate(snapshot, model);
@@ -415,6 +551,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     unpriced_token_records: snapshot.protocols.filter(p => !isPreToken(p) && !(p.mcap_usd !== null && p.mcap_usd > 0)).length,
     live_size: live.length,
     total_pre_token: snapshot.protocols.filter(isPreToken).length,
+    sensitivity: sensitivityRows(snapshot, model, board),
     rows: board.map((row) => ({
       rank: row.rank,
       slug: row.slug,

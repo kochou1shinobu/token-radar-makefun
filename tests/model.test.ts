@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildRadar, boardIssue, parseSnapshot, calibrate, isRankable, impliedValue,
-  MODEL, farmSteps,
+  MODEL, farmSteps, categoryFamily,
 } from '../lib/model.ts';
 import type { Snapshot, SnapshotProtocol } from '../lib/model.ts';
 
@@ -91,6 +91,49 @@ test('malformed input and over-cap board rejected', () => {
   const { board } = buildRadar(fixture);
   board[0].implied_value_usd = 100_000_000_000_001;
   assert.match(boardIssue(board, fixture)!, /implied value/);
+});
+
+test('calibration families are split, not lumped', () => {
+  // Category keywords map to distinct families: a curator is not a stablecoin.
+  assert.equal(categoryFamily('Yield Aggregator').family, 'yield & vaults');
+  assert.equal(categoryFamily('Risk Curator').family, 'yield & vaults');
+  assert.equal(categoryFamily('Stablecoins').family, 'stablecoins & rwa');
+  assert.equal(categoryFamily('RWA').family, 'stablecoins & rwa');
+  assert.equal(categoryFamily('Insurance').family, 'insurance & infrastructure');
+  assert.equal(categoryFamily('Dexes').family, 'trading venue');
+  assert.equal(categoryFamily('Dex Aggregator').family, 'trading venue');
+  assert.equal(categoryFamily('Basis Trading').family, 'trading venue');
+  assert.equal(categoryFamily('Something Unknown').family, 'other');
+  const m = calibrate(fixture);
+  assert.ok('yield & vaults' in m.peer_multiples!);
+  assert.ok('stablecoins & rwa' in m.peer_multiples!);
+  assert.ok('insurance & infrastructure' in m.peer_multiples!);
+  assert.ok(!('yield & infrastructure' in m.peer_multiples!));
+  // The fixture's priced set is all Dexes/Lending, so the yield family is empty
+  // and must say it falls back to the global median, with no typical peers.
+  const y = m.peer_multiples!['yield & vaults']!;
+  assert.equal(y.n, 0);
+  assert.equal(y.fallback, 'global');
+  assert.deepEqual(y.typicalPeers, []);
+  assert.equal(y.multiple, m.global_peer!.multiple);
+  // A populated family publishes its evidence: raw median, quartiles, clip count.
+  const lending = m.peer_multiples!['lending']!;
+  assert.ok(lending.n > 0);
+  assert.equal(lending.fallback, 'family');
+  assert.ok(lending.rawMedian !== null && lending.rawMedian > 0);
+  assert.ok(lending.q1 !== null && lending.q3 !== null && lending.q1 <= lending.q3);
+  assert.ok(Number.isInteger(lending.clipped) && lending.clipped >= 0);
+  assert.ok(lending.typicalPeers.length > 0 && lending.typicalPeers.length <= 3);
+});
+
+test('scenario sensitivity brackets the base value and rank', () => {
+  const { radar } = buildRadar(parseSnapshot(JSON.stringify(fixture)));
+  assert.equal(radar.sensitivity.length, 10);
+  for (const s of radar.sensitivity) {
+    assert.ok(s.conservative <= s.base && s.base <= s.generous);
+    assert.ok(s.rankLow <= s.rank && s.rank <= s.rankHigh);
+    assert.ok(s.rankLow >= 1 && s.rankHigh <= radar.board_size);
+  }
 });
 
 test('conditional farm plans satisfy step gate', () => {
