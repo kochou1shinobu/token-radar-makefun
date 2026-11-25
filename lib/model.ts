@@ -82,7 +82,7 @@ export function categoryFamily(category: string | null): { family: string } {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-6';
+export const MODEL_VERSION = 'radar-7';
 
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
@@ -422,9 +422,19 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): B
   }));
 }
 
-/** The first chain a protocol names, or a neutral phrase. */
-function chainOf(p: SnapshotProtocol): string {
-  return p.chains.length > 0 ? p.chains[0]! : 'its main chain';
+/**
+ * The chains a protocol names, all of them. The snapshot sorts chains alphabetically,
+ * so the first name is alphabetical, not primary — presenting one chain as "the" chain
+ * would invent a fact the snapshot does not carry, so plans name every chain and tell
+ * the reader to verify which one the product actually runs on.
+ */
+function chainsText(p: SnapshotProtocol): string {
+  return p.chains.length > 0 ? p.chains.join(', ') : 'its main chain';
+}
+
+/** Whether any named chain is Ethereum, which sets the higher fee allowance. */
+function onEthereum(p: SnapshotProtocol): boolean {
+  return p.chains.some((c) => c.toLowerCase() === 'ethereum');
 }
 
 /** How much capital one farm position needs, from the protocol's own TVL. */
@@ -444,15 +454,25 @@ function holdDaysFor(age: number | null): number {
   return 30;
 }
 
-/** The one step that differs by product type; every plan stays conditional, because the snapshot holds no asset, product or reward metadata. */
+/**
+ * The one step that differs by real business path; every plan stays conditional,
+ * because the snapshot holds no asset, product or reward metadata. The paths matter:
+ * a curator runs vaults on other people's strategies, an allocator moves capital
+ * between protocols, a CDP mints a stablecoin against collateral — none of those is
+ * a lending market, so none of them is routed as one.
+ */
 function actionFor(p: SnapshotProtocol, capital: number): string {
   const c = (p.category ?? '').toLowerCase();
-  if (/lend|cdp|collateral|money market/.test(c)) return `If a supported lending market is open, supply up to $${capital} of a supported asset, check utilization and withdrawal liquidity; avoid borrowing just for points.`;
+  const name = p.name;
+  if (/curator/.test(c)) return `This is a vault curator, not a lender: it runs vaults on other people's strategies. Check which vaults it curates, each vault's underlying strategy and track record, curator and performance fees, share redemption and withdrawal delays. Test a small deposit of an eligible asset before committing up to $${capital}.`;
+  if (/allocator/.test(c)) return `This is a capital allocator: it moves deposits between other protocols. Check where it allocates, each destination's own risks, allocator fees and redemption terms. Test a small deposit before committing up to $${capital}; do not assume the allocator's TVL is its own product.`;
+  if (/cdp|collateral/.test(c)) return `This is a CDP: it mints a stablecoin against locked collateral, it is not a lending market. If minting is open, check the collateral ratio, liquidation threshold and stability fee, and redemption terms. Only mint a small test amount against over-collateralization; never mint solely to farm points, and never borrow against collateral you cannot afford to lose.`;
+  if (/lend|money market/.test(c)) return `If a supported lending market is open, supply up to $${capital} of a supported asset, check utilization and withdrawal liquidity; avoid borrowing just for points.`;
   if (/aggregator/.test(c)) return `If the app routes swaps, quote a needed swap of $${Math.min(capital,50)} or less; compare slippage and fees with alternatives. Do not assume it has liquidity pools.`;
   if (/dex/.test(c)) return `If spot swaps are supported, make a needed small swap (up to $${Math.min(capital,50)}). Only consider LP if a real pool exists and you understand impermanent loss.`;
   if (/perpetual|derivative|options/.test(c)) return `Inspect collateral, funding, liquidation and trading fees. Start with a free demo or skip; only make a small genuine trade if already experienced. Never add leverage solely to farm.`;
   if (/prediction/.test(c)) return `Review market resolution rules and local eligibility. If lawful and genuinely useful, cap a single position at $${Math.min(capital,10)}; it can lose the full stake. Otherwise skip.`;
-  if (/yield|farm|vault|curator|allocator/.test(c)) return `If a public vault exists, check its underlying strategy, share redemption, withdrawal delays and fees; test a small deposit of an eligible asset before committing up to $${capital}.`;
+  if (/yield|farm|vault/.test(c)) return `If a public vault exists, check its underlying strategy, share redemption, withdrawal delays and fees; test a small deposit of an eligible asset before committing up to $${capital}.`;
   if (/stable/.test(c)) return `If public mint/redeem is available, check collateral, redemption and depeg risk. Test up to $${Math.min(capital,25)} only if the round trip is supported and affordable.`;
   if (/rwa/.test(c)) return `Check investor eligibility, minimum subscription, custody and redemption terms. Do not mint if access is restricted or the minimum exceeds $${capital}; otherwise test the smallest permitted amount.`;
   if (/insurance/.test(c)) return `Inspect real coverage, exclusions and premium quotes. Buy cover only for an existing risk and only if the premium fits the $${capital} ceiling; do not assume a policy NFT exists.`;
@@ -460,15 +480,18 @@ function actionFor(p: SnapshotProtocol, capital: number): string {
 }
 
 export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
-  const chain = chainOf(p), capital = capitalFor(p), hold = holdDaysFor(age);
-  const fee = chain === 'Ethereum' ? 15 : 5;
+  const capital = capitalFor(p), hold = holdDaysFor(age);
+  const fee = onEthereum(p) ? 15 : 5;
+  const chains = p.chains.length > 4
+    ? `${p.chains.slice(0, 4).join(', ')} and ${p.chains.length - 4} more`
+    : chainsText(p);
   return [
-    `Verify ${p.name} (${p.slug}) from trusted official sources; check that ${chain} is actually supported, whether a token or rewards already exist, eligibility, audits and withdrawal terms. Stop if identity or access is unclear. Cost: $0; time: 15 min.`,
+    `Verify ${p.name} (${p.slug}) from trusted official sources. The snapshot names chains ${chains} — it sorts them alphabetically, so verify which chain the product actually runs on. Check whether a token or rewards already exist, eligibility, audits and withdrawal terms. Stop if identity or access is unclear. Cost: $0; time: 15 min.`,
     `${actionFor(p, capital)} Budget ceiling: $${capital} capital or less (not a required minimum); fee allowance up to $${fee}, not a live quote. Time: 15–25 min.`,
     `Before signing, simulate or inspect the transaction, verify contract and asset, limit approvals and estimate round-trip fees. Skip if fees exceed $${fee} or 10% of the chosen position. Cost: $0 before signing; time: 5–10 min.`,
     `For ${p.name}, use only the normal product when it serves a genuine need. Check official rewards terms weekly; no confirmed points, required volume or airdrop in the snapshot. Avoid artificial churn or extra wallets. Cost: $0 to review; time: 5 min/week.`,
-    `If a position is appropriate, review it weekly for up to ${hold} days; exit sooner if risks, fees or liquidity change. Do not lock funds just for a speculative reward. Capital at risk: up to $${capital}; review time: 5 min/week.`,
-    `Record transaction hashes, net fees and any published eligibility rules. Test withdrawal or exit within your risk budget; revoke unused approvals when applicable. Never pay an unsolicited claim fee or share keys. Time: 10 min; network fee from remaining allowance.`,
+    `Review weekly for up to ${hold} days; exit sooner if any trigger fires: TVL falls more than 30% in 7 days, withdrawals pause or delay, a token launches (the launch thesis ends), an audit issue or exploit is published, or fees exceed the $${fee} allowance. Do not lock funds just for a speculative reward. Capital at risk: up to $${capital}; review time: 5 min/week.`,
+    `Record transaction hashes, net fees and any published eligibility rules. Test withdrawal or exit within your risk budget; revoke unused approvals when applicable. Total expected out-of-pocket: up to $${fee} in network fees (not a live quote) plus up to $${capital} at risk; verification and weekly reviews cost $0. Never pay an unsolicited claim fee or share keys. Time: 10 min.`,
   ].map(s => s.length > 600 ? s.slice(0,597)+'...' : s);
 }
 

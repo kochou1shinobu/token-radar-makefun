@@ -149,3 +149,31 @@ test('conditional farm plans satisfy step gate', () => {
     assert.match(steps.join(' '), /Cost:|cost:/);
   }
 });
+
+test('farm plans follow the real business path, not a generic route', () => {
+  const joined = (category: string) => farmSteps(proto(1, { category }), 100).join(' ');
+  // A curator runs vaults on other people's strategies; an allocator moves capital
+  // between protocols; a CDP mints against collateral. None of them is a lender.
+  const curator = joined('Risk Curators');
+  assert.match(curator, /curator/);
+  assert.match(curator, /vault/);
+  const allocator = joined('Onchain Capital Allocator');
+  assert.match(allocator, /allocator/);
+  const cdp = joined('CDP');
+  assert.match(cdp, /mint/);
+  assert.doesNotMatch(cdp, /supply up to \$\d+ of a supported asset/);
+  const lending = joined('Lending');
+  assert.match(lending, /supply up to \$\d+ of a supported asset/);
+  assert.doesNotMatch(lending, /mint/);
+  // The review window names observable exit triggers, and the last step sums the
+  // total expected out-of-pocket instead of scattering fee allowances.
+  for (const category of ['Risk Curators', 'CDP', 'Lending']) {
+    const text = joined(category);
+    assert.match(text, /TVL falls more than 30% in 7 days/);
+    assert.match(text, /Total expected out-of-pocket: up to \$\d+ in network fees/);
+  }
+  // Chains are named, not reduced to one alphabetical-first chain.
+  const multi = farmSteps(proto(1, { category: 'Yield', chains: ['Base', 'Ethereum', 'Arbitrum'] }), 100).join(' ');
+  assert.match(multi, /Base, Ethereum, Arbitrum/);
+  assert.match(multi, /sorts them alphabetically/);
+});
