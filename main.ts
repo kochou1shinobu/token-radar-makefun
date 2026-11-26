@@ -1,4 +1,4 @@
-// A token-radar-01 entry (Node 22, standard library only), model radar-8.
+// A token-radar-01 entry (Node 22, standard library only), model radar-9.
 //
 // The program reads the sealed snapshot from /input/snapshot.json (or --input <file|dir>),
 // scores every pre-token protocol with the model in lib/model.ts, writes the ranked
@@ -17,6 +17,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSyn
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
+import { validateModel, launchOdds } from './lib/validation.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 
@@ -47,6 +48,10 @@ if (out === resolve(here) || resolve(here).startsWith(out + '/') || ['dashboard'
 
 const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
 const { board, radar } = buildRadar(snapshot);
+// Held-out validation and launch odds are computed here, from this same run,
+// and published in the dashboard and the audit note below.
+radar.validation = validateModel(snapshot);
+radar.launch_odds = launchOdds(snapshot);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: the model wrote a board the gate refuses: ${issue}\n`);
@@ -81,8 +86,9 @@ if (!dashboard.includes('index.html') || !dashboard.some(x => x.endsWith('.css')
 /**
  * A short audit note the judge can read inside the dashboard, generated from this
  * very run — not a hand-written claim. It states the coverage partition, the
- * calibration each family actually got, the top-10 sensitivity, and the gate
- * checks main.ts already ran, so the dashboard carries its own evidence.
+ * calibration each family actually got, the top-10 sensitivity, the held-out
+ * validation that decided which value terms stay, and the gate checks main.ts
+ * already ran, so the dashboard carries its own evidence.
  */
 function auditNote(): string {
   const c = radar.coverage;
@@ -92,6 +98,18 @@ function auditNote(): string {
   ).join('\n');
   const sens = radar.sensitivity.map(s =>
     `- #${s.rank} ${s.slug}: base $${s.base.toLocaleString('en-US')}, conservative $${s.conservative.toLocaleString('en-US')}, generous $${s.generous.toLocaleString('en-US')}, rank ${s.rankLow}-${s.rankHigh}`
+  ).join('\n');
+  const v = radar.validation!;
+  const valTable = (rows: { variant: string; n: number; medianLogErr: number; within2x: number; within3x: number }[]) =>
+    rows.map(r => `- ${r.variant}: n=${r.n}, median |log10 error| ${r.medianLogErr.toFixed(3)} (~${Math.pow(10, r.medianLogErr).toFixed(2)}x), within 2x ${(r.within2x * 100).toFixed(0)}%, within 3x ${(r.within3x * 100).toFixed(0)}%`).join('\n');
+  const decisions = v.decisions.map(d =>
+    `- ${d.term}: ${d.verdict.toUpperCase()} (leave-one-out ${d.looWith.toFixed(3)} with vs ${d.looWithout.toFixed(3)} without; walk-forward ${d.wfWith.toFixed(3)} vs ${d.wfWithout.toFixed(3)}). ${d.reason}`
+  ).join('\n');
+  const perFam = v.perFamily.map(p =>
+    `- ${p.family}: n=${p.n}, median |log10 error| ${p.medianLogErr.toFixed(3)}, within 2x ${(p.within2x * 100).toFixed(0)}%`
+  ).join('\n');
+  const odds = radar.launch_odds.map(o =>
+    `- ${o.family}: ${o.priced} priced of ${o.priced + o.preToken} records, odds ${o.odds === null ? 'n/a (no records)' : (o.odds * 100).toFixed(0) + '%'}`
   ).join('\n');
   return [
     `# Model audit — token launch radar (${radar.model_version})`,
@@ -114,6 +132,30 @@ function auditNote(): string {
     `## Scenario sensitivity — top 10`,
     ``,
     sens,
+    ``,
+    `## Held-out validation — ${v.peers} priced peers, every term fitted on training folds only`,
+    ``,
+    `Tested model: radar-8's constants (maturity 0.85–1.15); the board below runs radar-9, which drops maturity on this evidence.`,
+    ``,
+    `Leave-one-out (calibrate without the peer, predict its market cap):`,
+    ``,
+    valTable(v.loo),
+    ``,
+    `Walk-forward by TVL (fit on the lower half, test the upper, then the reverse):`,
+    ``,
+    valTable(v.walkForward),
+    ``,
+    `Per-family leave-one-out error under the full model:`,
+    ``,
+    perFam,
+    ``,
+    `Keep/drop decisions (a term is dropped only when removing it improves BOTH tests by at least 0.02 in median log10 error):`,
+    ``,
+    decisions,
+    ``,
+    `## Launch odds from the peers' record — priced / (priced + pre-token) per family, a descriptive statistic, not a prediction`,
+    ``,
+    odds,
     ``,
     `## Gate checks main.ts ran before writing anything`,
     ``,

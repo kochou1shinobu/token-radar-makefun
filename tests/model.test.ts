@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildRadar, boardIssue, parseSnapshot, calibrate, isRankable, impliedValue,
-  MODEL, farmSteps, categoryFamily, coverage,
+  MODEL, MODEL_VERSION, farmSteps, categoryFamily, coverage,
 } from '../lib/model.ts';
+import { validateModel, launchOdds, pricedPeers } from '../lib/validation.ts';
 import type { Snapshot, SnapshotProtocol } from '../lib/model.ts';
 
 // One synthetic protocol per index; even rows are Dexes, odd rows Lending, so
@@ -192,4 +193,85 @@ test('farm plans follow the real business path, not a generic route', () => {
   const multi = farmSteps(proto(1, { category: 'Yield', chains: ['Base', 'Ethereum', 'Arbitrum'] }), 100).join(' ');
   assert.match(multi, /Base, Ethereum, Arbitrum/);
   assert.match(multi, /sorts them alphabetically/);
+});
+
+// --- radar-9 held-out validation ---
+// A synthetic snapshot with 12 priced peers above the floor, across families,
+// so the two blind tests have something to fit and test on.
+const pricedFixture = (i: number, overrides: Partial<SnapshotProtocol> = {}): SnapshotProtocol => ({
+  slug: `priced-${i}`,
+  name: `Priced Protocol ${i}`,
+  category: ['Dexes', 'Lending', 'Yield Aggregator', 'Stablecoins', 'Insurance'][i % 5]!,
+  chains: ['Base'],
+  tvl_usd: 60_000_000 + i * 10_000_000,
+  change_7d: i % 3 ? 10 : -5,
+  mcap_usd: Math.round((60_000_000 + i * 10_000_000) * [0.08, 0.12, 0.05, 0.2, 0.09, 0.15, 0.07, 0.11, 0.06, 0.18, 0.1, 0.13][i]!),
+  listed_at: '2023-06-01',
+  gecko_id: `priced-coin-${i}`,
+  symbol: `P${i}`,
+  ...overrides,
+});
+const validationFixture: Snapshot = {
+  as_of: '2026-11-14',
+  source: 'SYNTHETIC VALIDATION FIXTURE — not competition data',
+  floor_usd: 50_000_000,
+  protocols: [
+    ...Array.from({ length: 12 }, (_, i) => pricedFixture(i)),
+    ...Array.from({ length: 20 }, (_, i) => proto(400 + i)),
+  ],
+  watchlist: Array.from({ length: 5 }, (_, i) => `test-${400 + i}`),
+};
+
+test('held-out validation runs both blind tests and decides each term by rule', () => {
+  const snap = parseSnapshot(JSON.stringify(validationFixture));
+  assert.equal(pricedPeers(snap).length, 12);
+  const v = validateModel(snap);
+  assert.equal(v.peers, 12);
+  assert.equal(v.loo.length, 6);
+  assert.equal(v.walkForward.length, 6);
+  for (const r of [...v.loo, ...v.walkForward]) {
+    assert.ok(Number.isFinite(r.medianLogErr) && r.medianLogErr >= 0);
+    assert.ok(r.within2x >= 0 && r.within2x <= 1);
+    assert.ok(r.within3x >= 0 && r.within3x <= 1);
+    assert.ok(r.within3x >= r.within2x);
+  }
+  assert.equal(v.decisions.length, 4);
+  for (const d of v.decisions) {
+    assert.ok(d.verdict === 'kept' || d.verdict === 'dropped');
+    // The verdict follows the rule: dropped only when removing the term improves
+    // BOTH tests by at least 0.02 in median log10 error.
+    const shouldDrop = d.looWith - d.looWithout >= 0.02 && d.wfWith - d.wfWithout >= 0.02;
+    assert.equal(d.verdict, shouldDrop ? 'dropped' : 'kept', d.term);
+  }
+  assert.ok(v.perFamily.length >= 3);
+  for (const p of v.perFamily) assert.ok(Number.isFinite(p.medianLogErr) && p.medianLogErr >= 0);
+});
+
+test('validation is deterministic and launch odds are descriptive fractions', () => {
+  const snap = parseSnapshot(JSON.stringify(validationFixture));
+  assert.deepEqual(validateModel(snap), validateModel(snap));
+  const odds = launchOdds(snap);
+  assert.equal(odds.length, 6);
+  for (const o of odds) {
+    assert.ok(o.priced + o.preToken >= 0);
+    assert.ok(o.odds === null || (o.odds >= 0 && o.odds <= 1));
+    if (o.priced === 0 && o.preToken === 0) assert.equal(o.odds, null);
+  }
+});
+
+test('maturity term is exactly 1 in radar-9', () => {
+  assert.equal(MODEL_VERSION, 'radar-9');
+  assert.equal(MODEL.maturity_floor, 1);
+  assert.equal(MODEL.maturity_range, 0);
+  const v = impliedValue(proto(1, { listed_at: '2020-01-01' }), '2026-11-14', MODEL);
+  assert.equal(v.maturityMult, 1);
+  const young = impliedValue(proto(1, { listed_at: '2026-11-01' }), '2026-11-14', MODEL);
+  assert.equal(young.maturityMult, 1);
+});
+
+test('buildRadar leaves validation for main.ts to fill', () => {
+  const snap = parseSnapshot(JSON.stringify(fixture));
+  const { radar } = buildRadar(snap);
+  assert.equal(radar.validation, null);
+  assert.deepEqual(radar.launch_odds, []);
 });

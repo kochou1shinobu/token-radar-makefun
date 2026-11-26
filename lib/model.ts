@@ -1,9 +1,13 @@
-// radar-4 model: snapshot-only peer calibration with published peer evidence.
+// radar-9 model: snapshot-only peer calibration with published peer evidence,
+// plus held-out validation of every value term (lib/validation.ts).
 // Every number on the board is derived from the sealed snapshot alone: no
-// hardcoded per-protocol values, no launch-probability claim. The multiple a
-// protocol gets is the median market-cap/TVL of already-priced peers in its
-// category family, clipped to a sane band and shrunk toward the global median
-// when the family sample is small.
+// hardcoded per-protocol values. The multiple a protocol gets is the median
+// market-cap/TVL of already-priced peers in its category family, clipped to a
+// sane band and shrunk toward the global median when the family sample is
+// small. The maturity term was tested held-out in radar-9 and dropped: removing
+// it improves both blind tests, so the board no longer adjusts for tracking age.
+// Launch odds are the share of a family's snapshot protocols that already have
+// a token — a descriptive peer statistic, not a prediction.
 
 /** One protocol record: exactly the ten fields the sealed snapshot carries. */
 export interface SnapshotProtocol {
@@ -49,8 +53,12 @@ export const MODEL: ModelConstants = {
   growth_weight: 0.25,
   growth_floor: -40,
   growth_cap: 60,
-  maturity_floor: 0.85,
-  maturity_range: 0.3,
+  // Maturity was tested held-out in radar-9 (lib/validation.ts) and dropped:
+  // removing it improves leave-one-out by 0.038 and walk-forward by 0.032 in
+  // median log10 error, the only term that clears the bar on both blind tests.
+  // The constants stay at exactly 1 so the multiplier is 1 for every row.
+  maturity_floor: 1,
+  maturity_range: 0,
   maturity_days: 1460,
   unknown_age_days: 730,
   breadth_per_chain: 0.02,
@@ -82,7 +90,7 @@ export function categoryFamily(category: string | null): { family: string } {
 }
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-8';
+export const MODEL_VERSION = 'radar-9';
 
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
@@ -201,6 +209,10 @@ export interface RadarData {
   total_pre_token: number;
   coverage: Coverage;
   sensitivity: SensitivityRow[];
+  /** Held-out validation, filled in by main.ts (see lib/validation.ts). */
+  validation: import('./validation.ts').Validation | null;
+  /** Launch odds per family, filled in by main.ts (see lib/validation.ts). */
+  launch_odds: import('./validation.ts').LaunchOdds[];
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -240,6 +252,8 @@ export function impliedValue(
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
+  // radar-9: maturity_floor is 1 and maturity_range is 0, so this is exactly 1
+  // for every row — the term was tested held-out and dropped (lib/validation.ts).
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const breadthMult = 1 + model.breadth_per_chain * Math.min(Math.max(protocol.chains.length - 1, 0), model.breadth_max_extra_chains);
   const { family } = categoryFamily(protocol.category);
@@ -622,6 +636,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     total_pre_token: snapshot.protocols.filter(isPreToken).length,
     coverage: coverage(snapshot, board),
     sensitivity: sensitivityRows(snapshot, model, board),
+    validation: null,
+    launch_odds: [],
     rows: board.map((row) => ({
       rank: row.rank,
       slug: row.slug,

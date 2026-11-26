@@ -75,6 +75,26 @@ check('dashboard text fits 65,536 bytes', bytes <= 65_536, `${bytes} bytes acros
 const external = dash.filter((n) => /(href|src)\s*=\s*["']https?:|url\(\s*["']?https?:|@import\s+["']https?:|import\(\s*["']https?:/.test(readFileSync(join(out, 'dashboard', n), 'utf8')));
 check('dashboard has no external references', external.length === 0, external.join(', '));
 check('dashboard carries the generated audit note', existsSync(join(out, 'dashboard', 'model-audit.md')));
+const audit = readFileSync(join(out, 'dashboard', 'model-audit.md'), 'utf8');
+check('audit note publishes the held-out validation', audit.includes('## Held-out validation') && audit.includes('maturity: DROPPED'));
+
+// 5. Held-out validation: the numbers in data.js must match a fresh recomputation
+// from the same snapshot, so the dashboard cannot carry stale or hand-written claims.
+const { validateModel, launchOdds } = await import(join(here, 'lib', 'validation.ts'));
+const dataJs = readFileSync(join(out, 'data.js'), 'utf8');
+const radarJson = JSON.parse(dataJs.replace(/^window\.RADAR=/, '').replace(/;\s*$/, ''));
+const freshValidation = validateModel(snapshot);
+const freshOdds = launchOdds(snapshot);
+check(
+  'validation in data.js matches a fresh recomputation',
+  JSON.stringify(radarJson.validation) === JSON.stringify(freshValidation) && radarJson.validation.peers === 32,
+  `${radarJson.validation?.peers ?? 0} peers, maturity ${radarJson.validation?.decisions.find(d => d.term === 'maturity')?.verdict}`,
+);
+check(
+  'launch odds in data.js match a fresh recomputation',
+  JSON.stringify(radarJson.launch_odds) === JSON.stringify(freshOdds) && radarJson.launch_odds.length === 6,
+  `${radarJson.launch_odds.length} families`,
+);
 
 rmSync(out, { recursive: true, force: true });
 if (failures.length) {
